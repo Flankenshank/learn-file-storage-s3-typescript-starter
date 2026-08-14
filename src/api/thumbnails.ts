@@ -5,6 +5,7 @@ import type { ApiConfig } from "../config";
 import type { BunRequest } from "bun";
 import { BadRequestError, NotFoundError, UserForbiddenError } from "./errors";
 import path from "path/win32";
+import { randomBytes } from "crypto";
 
 type Thumbnail = {
   dataUrl: string;
@@ -44,7 +45,8 @@ export async function handlerUploadThumbnail(cfg: ApiConfig, req: BunRequest) {
   if (mediaType !== "image/jpeg" && mediaType !== "image/png") {
     throw new BadRequestError("Invalid thumbnail file type");
   }
-  const fileName = `${videoId}.${mediaType.split("/")[1]}`;
+  const randomFilePath = randomBytes(32).toString("base64url");
+  const fileName = `${randomFilePath}.${mediaType.split("/")[1]}`;
   const mediaFilePath = path.posix.join(cfg.assetsRoot, fileName);
   await Bun.write(mediaFilePath, await file.arrayBuffer());
   video.thumbnailURL = `http://localhost:${cfg.port}/assets/${fileName}`;
