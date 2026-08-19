@@ -46,23 +46,52 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
   const tempDir = os.tmpdir();
   const tempFilePath = path.join(tempDir, fileName);
   await Bun.write(tempFilePath, await file.arrayBuffer());
+  const aspectRatioString = await getVideoAspectRatio(tempFilePath);
+  const key = `${aspectRatioString}/${fileName}`;
 
   const tempFile = Bun.file(tempFilePath);
-  const s3file = cfg.s3Client.file(fileName);
+  const s3file = cfg.s3Client.file(key);
   
   try{
     
     await s3file.write(tempFile, { type: mediaType });
 
+    
+
   } finally {
     await Bun.file(tempFilePath).delete();
   }
 
-  const videoURL = `https://${cfg.s3Bucket}.s3.${cfg.s3Region}.amazonaws.com/${fileName}`;
+  const videoURL = `https://${cfg.s3Bucket}.s3.${cfg.s3Region}.amazonaws.com/${key}`;
   video.videoURL = videoURL;
   updateVideo(cfg.db, video);
   
   return respondWithJSON(200, video);
 }
 
+export async function getVideoAspectRatio(filepath: string): Promise< string > {
+  const aspectRatio = Bun.spawn(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "json", filepath]);
+  const stdoutText = await new Response(aspectRatio.stdout).text();
+  const stderrText = await new Response(aspectRatio.stderr).text();
+  const exited = await aspectRatio.exited;
+  let aspectRatioString: string;
+  if (exited == 0) {
+    const json = JSON.parse(stdoutText);
+    const width = json.streams[0].width;
+    const height = json.streams[0].height;
 
+    if (Math.floor((width / height) * 10) == Math.floor((16 / 9) * 10)) {
+      aspectRatioString = "landscape";
+    } else if (Math.floor((width / height) * 10) == Math.floor((9 / 16) * 10)) {
+      aspectRatioString = "portrait";
+    } else {
+      aspectRatioString = "other";
+    }
+
+
+    return aspectRatioString;
+  } else {
+    console.error(`ffprobe error: ${stderrText}`);
+    throw new Error(`ffprobe failed with exit code ${exited}`);
+  }
+}
