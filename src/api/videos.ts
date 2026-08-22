@@ -42,24 +42,32 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
     throw new UserForbiddenError("Authenticated user is not the video owner");
   }
 
+  let processedTempPath: string | undefined;
+  let key: string | undefined;
+
   const fileName = `${videoId}.${mediaType.split("/")[1]}`;
   const tempDir = os.tmpdir();
   const tempFilePath = path.join(tempDir, fileName);
-  await Bun.write(tempFilePath, await file.arrayBuffer());
-  const aspectRatioString = await getVideoAspectRatio(tempFilePath);
-  const key = `${aspectRatioString}/${fileName}`;
-
-  const tempFile = Bun.file(tempFilePath);
-  const s3file = cfg.s3Client.file(key);
   
   try{
     
+    await Bun.write(tempFilePath, await file.arrayBuffer());
+    processedTempPath = await processVideoForFastStart(tempFilePath);
+    const aspectRatioString = await getVideoAspectRatio(processedTempPath);
+    key = `${aspectRatioString}/${fileName}`;
+    const tempFile = Bun.file(processedTempPath);
+    const s3file = cfg.s3Client.file(key);
+      
     await s3file.write(tempFile, { type: mediaType });
-
-    
-
   } finally {
     await Bun.file(tempFilePath).delete();
+    if (processedTempPath) {
+      await Bun.file(processedTempPath).delete();
+    }
+  }
+
+  if (!key) {
+    throw new Error("Video upload did not produce an S3 key");
   }
 
   const videoURL = `https://${cfg.s3Bucket}.s3.${cfg.s3Region}.amazonaws.com/${key}`;
@@ -87,11 +95,30 @@ export async function getVideoAspectRatio(filepath: string): Promise< string > {
     } else {
       aspectRatioString = "other";
     }
-
-
+    
     return aspectRatioString;
   } else {
     console.error(`ffprobe error: ${stderrText}`);
     throw new Error(`ffprobe failed with exit code ${exited}`);
   }
+}
+
+export async function processVideoForFastStart(inputFilePath: string): Promise<string> {
+  const outputFilePath = inputFilePath.replace(/\.mp4$/, ".processed.mp4");
+  const ffmpegProcess = Bun.spawn([
+    "ffmpeg",
+    "-i", inputFilePath,
+    "-movflags", "faststart",
+    "-map_metadata", "0",
+    "-codec", "copy",
+    "-f", "mp4",
+    outputFilePath
+  ], { stderr: "pipe" });
+  const exited = await ffmpegProcess.exited;
+  if (exited !== 0) {
+    const stderrText = await new Response(ffmpegProcess.stderr).text();
+    console.error(`ffmpeg error: ${stderrText}`);
+    throw new Error(`ffmpeg failed with exit code ${exited}`);
+  }
+  return outputFilePath;
 }
